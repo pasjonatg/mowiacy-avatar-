@@ -2,7 +2,6 @@
 const textInput = document.getElementById('text-input');
 const speakButton = document.getElementById('speak-button');
 const mouth = document.getElementById('mouth');
-
 const topicInput = document.getElementById('topic-input');
 const autoButton = document.getElementById('auto-button');
 const stopButton = document.getElementById('stop-button');
@@ -18,22 +17,25 @@ const synth = window.speechSynthesis;
 // --- LOGIKA GŁOSU ---
 function loadVoices() {
     const voices = synth.getVoices();
-    // Szukamy polskiego głosu męskiego (np. Marek, Krzysztof, Paul)
-    maleVoice = voices.find(v => v.lang.includes('pl') && (v.name.includes('Marek') || v.name.includes('Krzysztof') || v.name.includes('Paul'))) 
-                || voices.find(v => v.lang.includes('pl'));
+    // Szukamy najlepszego polskiego głosu (Edge ma świetne głosy "Natural")
+    maleVoice = voices.find(v => v.lang.includes('pl') && v.name.includes('Natural')) ||
+                voices.find(v => v.lang.includes('pl') && (v.name.includes('Marek') || v.name.includes('Krzysztof'))) ||
+                voices.find(v => v.lang.includes('pl'));
 }
 
 if (synth.onvoiceschanged !== undefined) {
     synth.onvoiceschanged = loadVoices;
 }
+loadVoices();
 
 // --- GŁÓWNA FUNKCJA MÓWIENIA ---
 function speakText(text, callback = null) {
-    if (synth.speaking) return;
+    if (synth.speaking) synth.cancel(); // Przerwij poprzednie, jeśli jeszcze mówi
 
     const utterance = new SpeechSynthesisUtterance(text);
     if (maleVoice) utterance.voice = maleVoice;
     utterance.lang = 'pl-PL';
+    utterance.rate = 1.0; // Prędkość mówienia
 
     utterance.onstart = () => {
         mouth.style.animationPlayState = 'running';
@@ -43,61 +45,87 @@ function speakText(text, callback = null) {
     utterance.onend = () => {
         mouth.style.animationPlayState = 'paused';
         speakButton.disabled = false;
-        if (callback) callback(); // Wywołaj następne kroki po skończeniu mówienia
+        if (callback) callback(); 
     };
 
     synth.speak(utterance);
 }
 
-// --- LOGIKA TRYBU AUTOMATYCZNEGO (WIKIPEDIA) ---
-async function fetchWikiData() {
+// --- NOWA LOGIKA: POBIERANIE PEŁNEJ TREŚCI ---
+async function fetchLongWikiData() {
     const topic = topicInput.value.trim();
-    if (!topic) {
-        alert("Wpisz temat!");
-        return;
-    }
+    if (!topic) return alert("Wpisz temat!");
 
-    statusInfo.textContent = "🔍 Szukam informacji w Wikipedii...";
+    statusInfo.textContent = "🔍 Przeszukuję Wikipedię...";
     
     try {
-        // Pobieramy podsumowanie strony z Wikipedii
-        const response = await fetch(`https://pl.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topic)}`);
-        const data = await response.json();
+        // KROK 1: Szukamy najtrafniejszego tytułu (rozwiązuje problem małych liter)
+        const searchRes = await fetch(`https://pl.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(topic)}&format=json&origin=*`);
+        const searchData = await searchRes.json();
 
-        if (data.extract) {
-            // Dzielimy tekst na zdania
-            sentences = data.extract.split('. ').filter(s => s.length > 10);
-            currentSentenceIndex = 0;
+        if (searchData.query.search.length === 0) {
+            statusInfo.textContent = "❌ Nie znaleziono takiego tematu.";
+            return;
+        }
+
+        const bestTitle = searchData.query.search[0].title;
+        statusInfo.textContent = `📖 Pobieram pełną treść: ${bestTitle}...`;
+
+        // KROK 2: Pobieramy pełną treść artykułu (plaintext)
+        const contentRes = await fetch(`https://pl.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=true&titles=${encodeURIComponent(bestTitle)}&format=json&origin=*`);
+        const contentData = await contentRes.json();
+        
+        const pages = contentData.query.pages;
+        const pageId = Object.keys(pages)[0];
+        const fullText = pages[pageId].extract;
+
+        if (!fullText) {
+            statusInfo.textContent = "❌ Treść artykułu jest pusta.";
+            return;
+        }
+
+        // KROK 3: Czyszczenie tekstu (usuwamy puste linie, nagłówki sekcji typu === Opis ===)
+        const cleanText = fullText
+            .replace(/={2,}/g, '') // Usuwa znaki ===
+            .replace(/\n+/g, ' '); // Zamienia entery na spacje
+
+        // KROK 4: Dzielenie na zdania
+        sentences = cleanText.split(/[.!?]+\s/).filter(s => s.length > 15);
+        currentSentenceIndex = 0;
+
+        if (sentences.length > 0) {
             startAutoLoop();
         } else {
-            statusInfo.textContent = "❌ Nie znaleziono tematu.";
+            statusInfo.textContent = "❌ Nie udało się podzielić tekstu na zdania.";
         }
+
     } catch (error) {
-        statusInfo.textContent = "❌ Błąd połączenia.";
+        console.error(error);
+        statusInfo.textContent = "❌ Błąd połączenia z serwerem.";
     }
 }
 
 function startAutoLoop() {
     autoButton.style.display = 'none';
     stopButton.style.display = 'inline-block';
-    
-    runStep(); // Uruchom pierwszy raz od razu
+    runStep();
 }
 
 function runStep() {
     if (currentSentenceIndex < sentences.length) {
         const textToSay = sentences[currentSentenceIndex];
-        textInput.value = textToSay; // Pokazujemy tekst w okienku
+        textInput.value = textToSay; 
         
-        statusInfo.textContent = `🗣️ Mówię zdanie ${currentSentenceIndex + 1} z ${sentences.length}...`;
+        statusInfo.textContent = `🗣️ Zdanie ${currentSentenceIndex + 1} z ${sentences.length}`;
         
         speakText(textToSay, () => {
             currentSentenceIndex++;
             if (currentSentenceIndex < sentences.length) {
-                statusInfo.textContent = "⏳ Przerwa 30 sekund...";
-                autoInterval = setTimeout(runStep, 30000); // CZEKAJ 30 SEKUND
+                // Możesz zmienić 30000 (30s) na np. 5000 (5s), żeby szybciej sprawdzić działanie
+                statusInfo.textContent = "⏳ Następna partia za 30 sekund...";
+                autoInterval = setTimeout(runStep, 30000); 
             } else {
-                stopAutoMode("Koniec informacji.");
+                stopAutoMode("Koniec artykułu.");
             }
         });
     }
@@ -105,7 +133,7 @@ function runStep() {
 
 function stopAutoMode(msg = "Zatrzymano.") {
     clearTimeout(autoInterval);
-    synth.cancel(); // Przestań mówić natychmiast
+    synth.cancel();
     mouth.style.animationPlayState = 'paused';
     autoButton.style.display = 'inline-block';
     stopButton.style.display = 'none';
@@ -114,5 +142,5 @@ function stopAutoMode(msg = "Zatrzymano.") {
 
 // --- EVENT LISTENERY ---
 speakButton.addEventListener('click', () => speakText(textInput.value));
-autoButton.addEventListener('click', fetchWikiData);
+autoButton.addEventListener('click', fetchLongWikiData);
 stopButton.addEventListener('click', () => stopAutoMode());
