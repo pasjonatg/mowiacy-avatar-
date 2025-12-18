@@ -6,8 +6,9 @@ const topicInput = document.getElementById('topic-input');
 const autoButton = document.getElementById('auto-button');
 const stopButton = document.getElementById('stop-button');
 const statusInfo = document.getElementById('status-info');
-const langSelect = document.getElementById('language-select'); // NOWE
-const progressBar = document.getElementById('progress-bar');    // NOWE
+const langSelect = document.getElementById('language-select');
+const genderSelect = document.getElementById('gender-select'); // NOWE
+const progressBar = document.getElementById('progress-bar');
 
 // --- ZMIENNE GLOBALNE ---
 let currentVoice = null;
@@ -16,24 +17,39 @@ let sentences = [];
 let currentSentenceIndex = 0;
 const synth = window.speechSynthesis;
 
-// --- LOGIKA GŁOSU ---
+// --- LOGIKA WYBORU GŁOSU ---
 function loadVoices() {
     const voices = synth.getVoices();
-    const lang = langSelect.value; // Pobierz wybrany język (pl lub en)
+    const lang = langSelect.value;
+    const gender = genderSelect.value;
 
-    if (lang === 'pl') {
-        currentVoice = voices.find(v => v.lang.includes('pl') && v.name.includes('Natural')) ||
-                       voices.find(v => v.lang.includes('pl'));
-    } else {
-        currentVoice = voices.find(v => v.lang.includes('en') && v.name.includes('Natural')) ||
-                       voices.find(v => v.lang.includes('en') && v.name.includes('Google')) ||
-                       voices.find(v => v.lang.includes('en'));
-    }
+    // Słowa kluczowe dla filtrów
+    const maleNames = ['Marek', 'Krzysztof', 'Paul', 'Guy', 'Andrew', 'James', 'Christopher', 'David'];
+    const femaleNames = ['Zofia', 'Maja', 'Agnieszka', 'Ewa', 'Jenny', 'Aria', 'Sonia', 'Emma', 'Ava'];
+
+    // Filtrujemy głosy dla wybranego języka
+    let filteredVoices = voices.filter(v => v.lang.includes(lang));
+
+    // Próbujemy dopasować płeć na podstawie imion lub metadanych
+    let selectedVoice = filteredVoices.find(v => {
+        const name = v.name;
+        if (gender === 'male') {
+            return maleNames.some(m => name.includes(m)) || (name.includes('Natural') && !femaleNames.some(f => name.includes(f)));
+        } else {
+            return femaleNames.some(f => name.includes(f)) || (name.includes('Natural') && !maleNames.some(m => name.includes(m)));
+        }
+    });
+
+    // Jeśli nie znaleziono idealnego dopasowania, bierzemy pierwszy lepszy dla danego języka
+    currentVoice = selectedVoice || filteredVoices[0];
+    
+    console.log(`Wybrano głos: ${currentVoice ? currentVoice.name : 'Brak'}`);
 }
 
-// Odśwież głosy przy zmianie języka lub załadowaniu strony
+// Reagowanie na zmiany ustawień
 synth.onvoiceschanged = loadVoices;
 langSelect.addEventListener('change', loadVoices);
+genderSelect.addEventListener('change', loadVoices);
 loadVoices();
 
 // --- FUNKCJA AKTUALIZACJI PASKA ---
@@ -46,6 +62,8 @@ function updateProgressBar() {
 // --- GŁÓWNA FUNKCJA MÓWIENIA ---
 function speakText(text, callback = null) {
     synth.cancel(); 
+
+    if (!text) return;
 
     const utterance = new SpeechSynthesisUtterance(text);
     if (currentVoice) utterance.voice = currentVoice;
@@ -66,10 +84,10 @@ function speakText(text, callback = null) {
     synth.speak(utterance);
 }
 
-// --- POBIERANIE DANYCH (PL/EN) ---
+// --- POBIERANIE DANYCH Z WIKIPEDII ---
 async function fetchLongWikiData() {
     const topic = topicInput.value.trim();
-    const lang = langSelect.value; // 'pl' lub 'en'
+    const lang = langSelect.value;
     
     if (!topic) return alert(lang === 'pl' ? "Wpisz temat!" : "Enter a topic!");
 
@@ -77,10 +95,7 @@ async function fetchLongWikiData() {
     progressBar.style.width = "0%";
     
     try {
-        // Dynamiczny URL zależny od wybranego języka
         const wikiApiUrl = `https://${lang}.wikipedia.org/w/api.php`;
-
-        // KROK 1: Szukanie tytułu
         const searchRes = await fetch(`${wikiApiUrl}?action=query&list=search&srsearch=${encodeURIComponent(topic)}&format=json&origin=*`);
         const searchData = await searchRes.json();
 
@@ -92,7 +107,6 @@ async function fetchLongWikiData() {
         const bestTitle = searchData.query.search[0].title;
         statusInfo.textContent = `📖 ${bestTitle}`;
 
-        // KROK 2: Pobieranie treści
         const contentRes = await fetch(`${wikiApiUrl}?action=query&prop=extracts&explaintext=true&titles=${encodeURIComponent(bestTitle)}&format=json&origin=*`);
         const contentData = await contentRes.json();
         
@@ -100,14 +114,13 @@ async function fetchLongWikiData() {
         const pageId = Object.keys(pages)[0];
         const fullText = pages[pageId].extract;
 
-        // KROK 3: Czyszczenie tekstu
         const cleanText = fullText
             .replace(/\[\d+\]/g, '') 
             .replace(/={2,}/g, '') 
             .replace(/\n+/g, ' ')
             .trim();
 
-        // KROK 4: Podział na zdania
+        // Dzielenie na zdania (PL i EN)
         sentences = cleanText.match(/[A-ZŚĆŹŻŁÓ].+?([.!?]|\.\.\.)(?=\s[A-ZŚĆŹŻŁÓ]|$)/g) || cleanText.split(/[.!?]+\s/);
         currentSentenceIndex = 0;
 
