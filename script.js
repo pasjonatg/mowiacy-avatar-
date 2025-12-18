@@ -19,50 +19,69 @@ let sentences = [];
 let currentSentenceIndex = 0;
 const synth = window.speechSynthesis;
 
-// --- LOGIKA GŁOSU ---
+// --- LOGIKA WYBORU GŁOSU (PL i EN + Płeć) ---
 function loadVoices() {
     const voices = synth.getVoices();
-    const lang = langSelect.value;
-    const gender = genderSelect.value;
+    const lang = langSelect.value; // 'pl' lub 'en'
+    const gender = genderSelect.value; // 'male' lub 'female'
 
-    const maleNames = ['Marek', 'Krzysztof', 'Paul', 'Guy', 'Andrew', 'James'];
-    const femaleNames = ['Zofia', 'Maja', 'Agnieszka', 'Ewa', 'Jenny', 'Aria'];
+    // Rozszerzone listy imion do wykrywania płci
+    const maleNames = ['Marek', 'Krzysztof', 'Paul', 'Guy', 'Andrew', 'James', 'David', 'Christopher', 'Stefan', 'Ryan', 'George', 'Frank'];
+    const femaleNames = ['Zofia', 'Maja', 'Agnieszka', 'Ewa', 'Jenny', 'Aria', 'Sonia', 'Emma', 'Ava', 'Zuzanna', 'Catherine', 'Linda'];
 
-    let filtered = voices.filter(v => v.lang.includes(lang));
+    // Filtrowanie głosów dla wybranego języka
+    let filtered = voices.filter(v => v.lang.toLowerCase().includes(lang.toLowerCase()));
 
+    // Próba znalezienia głosu pasującego do płci
     let selected = filtered.find(v => {
-        const n = v.name;
-        return gender === 'male' ? 
-            maleNames.some(m => n.includes(m)) || (n.includes('Natural') && !femaleNames.some(f => n.includes(f))) :
-            femaleNames.some(f => n.includes(f)) || (n.includes('Natural') && !maleNames.some(m => n.includes(m)));
+        const name = v.name.toLowerCase();
+        if (gender === 'male') {
+            return maleNames.some(m => name.includes(m.toLowerCase())) || 
+                   (name.includes('male') && !name.includes('female'));
+        } else {
+            return femaleNames.some(f => name.includes(f.toLowerCase())) || 
+                   name.includes('female');
+        }
     });
 
+    // Fallback: jeśli nie znaleziono dopasowania męskiego, weź jakikolwiek, który nie jest na liście żeńskiej
+    if (!selected && gender === 'male') {
+        selected = filtered.find(v => !femaleNames.some(f => v.name.toLowerCase().includes(f.toLowerCase())));
+    }
+
     currentVoice = selected || filtered[0];
+    console.log(`Wybrano: ${currentVoice ? currentVoice.name : 'Brak głosu'}`);
 }
 
-// Zdarzenia aktualizacji
-synth.onvoiceschanged = loadVoices;
+// Obsługa ładowania głosów przez przeglądarkę
+if (synth.onvoiceschanged !== undefined) {
+    synth.onvoiceschanged = loadVoices;
+}
+loadVoices();
+
+// --- ZMIANA USTAWIEŃ W TRAKCIE ---
 langSelect.addEventListener('change', loadVoices);
 genderSelect.addEventListener('change', loadVoices);
 speedRange.addEventListener('input', () => {
     speedValue.textContent = speedRange.value;
 });
 
-loadVoices();
-
-// --- FUNKCJE POMOCNICZE ---
+// --- FUNKCJA PASKA POSTĘPU ---
 function updateProgressBar() {
     if (sentences.length === 0) return;
     const progress = (currentSentenceIndex / sentences.length) * 100;
     progressBar.style.width = `${progress}%`;
 }
 
+// --- FUNKCJA MÓWIENIA ---
 function speakText(text, callback = null) {
-    synth.cancel();
+    synth.cancel(); // Przerwij, jeśli już coś mówi
     if (!text) return;
 
     const utterance = new SpeechSynthesisUtterance(text);
     if (currentVoice) utterance.voice = currentVoice;
+    
+    // Ustawienie poprawnego kodu języka dla syntezatora
     utterance.lang = langSelect.value === 'pl' ? 'pl-PL' : 'en-US';
     utterance.rate = parseFloat(speedRange.value);
 
@@ -77,34 +96,61 @@ function speakText(text, callback = null) {
         if (callback) callback();
     };
 
+    utterance.onerror = () => {
+        mouth.style.animationPlayState = 'paused';
+        speakButton.disabled = false;
+    };
+
     synth.speak(utterance);
 }
 
-// --- LOGIKA WIKIPEDII ---
+// --- POBIERANIE DANYCH Z WIKIPEDII ---
 async function fetchLongWikiData() {
     const topic = topicInput.value.trim();
     const lang = langSelect.value;
-    if (!topic) return alert(lang === 'pl' ? "Wpisz temat!" : "Enter a topic!");
+    
+    if (!topic) {
+        alert(lang === 'pl' ? "Wpisz temat!" : "Please enter a topic!");
+        return;
+    }
 
-    statusInfo.textContent = lang === 'pl' ? "🔍 Szukam..." : "🔍 Searching...";
+    statusInfo.textContent = lang === 'pl' ? "🔍 Szukam artykułu..." : "🔍 Searching...";
     progressBar.style.width = "0%";
 
     try {
-        const url = `https://${lang}.wikipedia.org/w/api.php`;
-        const sRes = await fetch(`${url}?action=query&list=search&srsearch=${encodeURIComponent(topic)}&format=json&origin=*`);
+        const apiUrl = `https://${lang}.wikipedia.org/w/api.php`;
+        
+        // 1. Szukanie najlepszego tytułu
+        const sRes = await fetch(`${apiUrl}?action=query&list=search&srsearch=${encodeURIComponent(topic)}&format=json&origin=*`);
         const sData = await sRes.json();
 
-        if (!sData.query.search.length) {
-            statusInfo.textContent = "❌ Brak wyników.";
+        if (!sData.query.search || sData.query.search.length === 0) {
+            statusInfo.textContent = lang === 'pl' ? "❌ Nie znaleziono." : "❌ Not found.";
             return;
         }
 
         const title = sData.query.search[0].title;
-        const cRes = await fetch(`${url}?action=query&prop=extracts&explaintext=true&titles=${encodeURIComponent(title)}&format=json&origin=*`);
-        const cData = await cRes.json();
-        const fullText = cData.query.pages[Object.keys(cData.query.pages)[0]].extract;
+        statusInfo.textContent = `📖 ${title}`;
 
-        const cleanText = fullText.replace(/\[\d+\]/g, '').replace(/={2,}/g, '').replace(/\n+/g, ' ').trim();
+        // 2. Pobieranie pełnej treści
+        const cRes = await fetch(`${apiUrl}?action=query&prop=extracts&explaintext=true&titles=${encodeURIComponent(title)}&format=json&origin=*`);
+        const cData = await cRes.json();
+        const pageId = Object.keys(cData.query.pages)[0];
+        const fullText = cData.query.pages[pageId].extract;
+
+        if (!fullText) {
+            statusInfo.textContent = "❌ Brak treści.";
+            return;
+        }
+
+        // 3. Czyszczenie tekstu (przypisy, nagłówki, entery)
+        const cleanText = fullText
+            .replace(/\[\d+\]/g, '')     // [1], [2]
+            .replace(/={2,}/g, '')      // == Sekcja ==
+            .replace(/\n+/g, ' ')       // Nowe linie
+            .trim();
+
+        // 4. Podział na zdania
         sentences = cleanText.match(/[A-ZŚĆŹŻŁÓ].+?([.!?]|\.\.\.)(?=\s[A-ZŚĆŹŻŁÓ]|$)/g) || cleanText.split(/[.!?]+\s/);
         
         currentSentenceIndex = 0;
@@ -112,8 +158,12 @@ async function fetchLongWikiData() {
             autoButton.style.display = 'none';
             stopButton.style.display = 'inline-block';
             runStep();
+        } else {
+            statusInfo.textContent = "❌ Błąd podziału tekstu.";
         }
-    } catch (e) {
+
+    } catch (error) {
+        console.error(error);
         statusInfo.textContent = "❌ Błąd połączenia.";
     }
 }
@@ -121,16 +171,23 @@ async function fetchLongWikiData() {
 function runStep() {
     if (currentSentenceIndex < sentences.length) {
         const text = sentences[currentSentenceIndex].trim();
+        if (text.length < 5) { // Pomijaj bardzo krótkie fragmenty
+            currentSentenceIndex++;
+            runStep();
+            return;
+        }
+
         textInput.value = text;
         updateProgressBar();
         statusInfo.textContent = `🗣️ ${currentSentenceIndex + 1} / ${sentences.length}`;
-        
+
         speakText(text, () => {
             currentSentenceIndex++;
-            autoInterval = setTimeout(runStep, 1500);
+            // Mała pauza między zdaniami dla naturalności
+            autoInterval = setTimeout(runStep, 1200);
         });
     } else {
-        stopAutoMode("Koniec artykułu.");
+        stopAutoMode(langSelect.value === 'pl' ? "Zakończono czytanie." : "Finished reading.");
     }
 }
 
@@ -144,7 +201,7 @@ function stopAutoMode(msg = "Zatrzymano.") {
     speakButton.disabled = false;
 }
 
-// --- EVENTY ---
+// --- EVENT LISTENERY ---
 speakButton.addEventListener('click', () => speakText(textInput.value));
 autoButton.addEventListener('click', fetchLongWikiData);
 stopButton.addEventListener('click', () => stopAutoMode());
