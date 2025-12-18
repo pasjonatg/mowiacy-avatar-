@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mówiący Awatar TTS - Tryb Auto</title>
+    <title>Mówiący Awatar TTS - Wikipedia Reader</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
-        <h1>🗣️ Aplikacja Tekst-na-Mowę</h1>
+        <h1>🗣️ Tekst-na-Mowę</h1>
 
         <div id="avatar">
             <div class="eye left"></div>
@@ -16,32 +16,49 @@
             <div id="mouth"></div>
         </div>
 
-        <textarea id="text-input" placeholder="Wpisz tekst lub wybierz tryb auto..."></textarea>
-        <button id="speak-button">Odczytaj Głos Męski</button>
+        <textarea id="text-input" placeholder="Wpisz tekst lub pobierz dane z Wikipedii..."></textarea>
+        
+        <div class="controls-grid">
+            <div class="select-group">
+                <label>Język:</label>
+                <select id="language-select">
+                    <option value="pl">Polski (PL)</option>
+                    <option value="en">English (EN)</option>
+                </select>
+            </div>
+
+            <div class="select-group">
+                <label>Głos:</label>
+                <select id="gender-select">
+                    <option value="male">Mężczyzna (Male)</option>
+                    <option value="female">Kobieta (Female)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="speed-control">
+            <label>Prędkość: <span id="speed-value">1.0</span>x</label>
+            <input type="range" id="speed-range" min="0.5" max="2" step="0.1" value="1.0">
+        </div>
+
+        <button id="speak-button">Odczytaj tekst</button>
 
         <div class="auto-section">
             <hr>
             <h3>🤖 Tryb Automatyczny (Wikipedia)</h3>
-            <input type="text" id="topic-input" placeholder="Wpisz temat, np. Assassin's Creed">
+            <input type="text" id="topic-input" placeholder="Wpisz temat (np. Tesla, Kot)">
+            
             <div class="button-group">
-                <button id="auto-button">Uruchom automat (co 30s)</button>
+                <button id="auto-button">Uruchom czytanie</button>
                 <button id="stop-button" class="btn-stop" style="display: none;">Zatrzymaj</button>
             </div>
+            
             <p id="status-info"></p>
+            
+            <div id="progress-container">
+                <div id="progress-bar"></div>
+            </div>
         </div>
-
-        <select id="language-select">
-    <option value="pl">Polski (PL)</option>
-    <option value="en">English (EN)</option>
-    <select id="gender-select">
-    <option value="male">Mężczyzna (Male)</option>
-    <option value="female">Kobieta (Female)</option>
-</select>
-</select>
-
-<div id="progress-container" style="width: 100%; background: #eee; height: 10px; margin: 10px 0; border-radius: 5px; overflow: hidden;">
-    <div id="progress-bar" style="width: 0%; height: 100%; background: #4CAF50; transition: width 0.3s;"></div>
-</div>
     </div>
 
     <script src="script.js"></script>
