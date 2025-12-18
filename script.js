@@ -6,9 +6,11 @@ const topicInput = document.getElementById('topic-input');
 const autoButton = document.getElementById('auto-button');
 const stopButton = document.getElementById('stop-button');
 const statusInfo = document.getElementById('status-info');
+const langSelect = document.getElementById('language-select'); // NOWE
+const progressBar = document.getElementById('progress-bar');    // NOWE
 
 // --- ZMIENNE GLOBALNE ---
-let maleVoice = null;
+let currentVoice = null;
 let autoInterval = null;
 let sentences = [];
 let currentSentenceIndex = 0;
@@ -17,27 +19,37 @@ const synth = window.speechSynthesis;
 // --- LOGIKA GŁOSU ---
 function loadVoices() {
     const voices = synth.getVoices();
-    // Szukamy głosów "Natural" lub polskich imion
-    maleVoice = voices.find(v => v.lang.includes('pl') && v.name.includes('Natural')) ||
-                voices.find(v => v.lang.includes('pl') && (v.name.includes('Marek') || v.name.includes('Krzysztof'))) ||
-                voices.find(v => v.lang.includes('pl'));
+    const lang = langSelect.value; // Pobierz wybrany język (pl lub en)
+
+    if (lang === 'pl') {
+        currentVoice = voices.find(v => v.lang.includes('pl') && v.name.includes('Natural')) ||
+                       voices.find(v => v.lang.includes('pl'));
+    } else {
+        currentVoice = voices.find(v => v.lang.includes('en') && v.name.includes('Natural')) ||
+                       voices.find(v => v.lang.includes('en') && v.name.includes('Google')) ||
+                       voices.find(v => v.lang.includes('en'));
+    }
 }
 
-if (synth.onvoiceschanged !== undefined) {
-    synth.onvoiceschanged = loadVoices;
-}
+// Odśwież głosy przy zmianie języka lub załadowaniu strony
+synth.onvoiceschanged = loadVoices;
+langSelect.addEventListener('change', loadVoices);
 loadVoices();
+
+// --- FUNKCJA AKTUALIZACJI PASKA ---
+function updateProgressBar() {
+    if (sentences.length === 0) return;
+    const progress = ((currentSentenceIndex) / sentences.length) * 100;
+    progressBar.style.width = `${progress}%`;
+}
 
 // --- GŁÓWNA FUNKCJA MÓWIENIA ---
 function speakText(text, callback = null) {
-    // Zawsze przerywamy obecną mowę przed nową
     synth.cancel(); 
 
-    if (!text) return;
-
     const utterance = new SpeechSynthesisUtterance(text);
-    if (maleVoice) utterance.voice = maleVoice;
-    utterance.lang = 'pl-PL';
+    if (currentVoice) utterance.voice = currentVoice;
+    utterance.lang = langSelect.value === 'pl' ? 'pl-PL' : 'en-US';
     utterance.rate = 1.0; 
 
     utterance.onstart = () => {
@@ -51,74 +63,60 @@ function speakText(text, callback = null) {
         if (callback) callback(); 
     };
 
-    utterance.onerror = () => {
-        mouth.style.animationPlayState = 'paused';
-        speakButton.disabled = false;
-    };
-
     synth.speak(utterance);
 }
 
-// --- POBIERANIE DANYCH Z WIKIPEDII ---
+// --- POBIERANIE DANYCH (PL/EN) ---
 async function fetchLongWikiData() {
     const topic = topicInput.value.trim();
-    if (!topic) return alert("Wpisz temat!");
+    const lang = langSelect.value; // 'pl' lub 'en'
+    
+    if (!topic) return alert(lang === 'pl' ? "Wpisz temat!" : "Enter a topic!");
 
-    statusInfo.textContent = "🔍 Szukam tematu...";
+    statusInfo.textContent = lang === 'pl' ? "🔍 Szukam..." : "🔍 Searching...";
+    progressBar.style.width = "0%";
     
     try {
-        // KROK 1: Wyszukiwanie poprawnego tytułu
-        const searchRes = await fetch(`https://pl.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(topic)}&format=json&origin=*`);
+        // Dynamiczny URL zależny od wybranego języka
+        const wikiApiUrl = `https://${lang}.wikipedia.org/w/api.php`;
+
+        // KROK 1: Szukanie tytułu
+        const searchRes = await fetch(`${wikiApiUrl}?action=query&list=search&srsearch=${encodeURIComponent(topic)}&format=json&origin=*`);
         const searchData = await searchRes.json();
 
         if (!searchData.query.search.length) {
-            statusInfo.textContent = "❌ Nie znaleziono artykułu.";
+            statusInfo.textContent = "❌ Not found.";
             return;
         }
 
         const bestTitle = searchData.query.search[0].title;
-        statusInfo.textContent = `📖 Pobieram: ${bestTitle}...`;
+        statusInfo.textContent = `📖 ${bestTitle}`;
 
-        // KROK 2: Pobieranie tekstu
-        const contentRes = await fetch(`https://pl.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=true&titles=${encodeURIComponent(bestTitle)}&format=json&origin=*`);
+        // KROK 2: Pobieranie treści
+        const contentRes = await fetch(`${wikiApiUrl}?action=query&prop=extracts&explaintext=true&titles=${encodeURIComponent(bestTitle)}&format=json&origin=*`);
         const contentData = await contentRes.json();
         
         const pages = contentData.query.pages;
         const pageId = Object.keys(pages)[0];
         const fullText = pages[pageId].extract;
 
-        if (!fullText) {
-            statusInfo.textContent = "❌ Artykuł jest pusty.";
-            return;
-        }
-
-        // KROK 3: Zaawansowane czyszczenie tekstu
+        // KROK 3: Czyszczenie tekstu
         const cleanText = fullText
-            .replace(/\[\d+\]/g, '')         // Usuwa przypisy typu [1], [22]
-            .replace(/\(([^)]+)\)/g, '')    // Opcjonalnie: usuwa teksty w nawiasach (często daty/wymowę)
-            .replace(/={2,}/g, '')          // Usuwa nagłówki sekcji
-            .replace(/\n+/g, ' ')           // Usuwa entery
+            .replace(/\[\d+\]/g, '') 
+            .replace(/={2,}/g, '') 
+            .replace(/\n+/g, ' ')
             .trim();
 
-        // KROK 4: Dzielenie na zdania (uwzględnia kropkę po której jest wielka litera)
-        sentences = cleanText.match(/[A-ZŚĆŹŻŁÓ].+?([.!?]|\.\.\.)(?=\s[A-ZŚĆŹŻŁÓ]|$)/g) || [];
-        
-        // Jeśli match zawiedzie, używamy prostszego podziału jako fallback
-        if (sentences.length === 0) {
-            sentences = cleanText.split(/[.!?]+\s/).filter(s => s.length > 5);
-        }
-
+        // KROK 4: Podział na zdania
+        sentences = cleanText.match(/[A-ZŚĆŹŻŁÓ].+?([.!?]|\.\.\.)(?=\s[A-ZŚĆŹŻŁÓ]|$)/g) || cleanText.split(/[.!?]+\s/);
         currentSentenceIndex = 0;
 
         if (sentences.length > 0) {
             startAutoLoop();
-        } else {
-            statusInfo.textContent = "❌ Błąd przetwarzania zdań.";
         }
 
     } catch (error) {
-        console.error(error);
-        statusInfo.textContent = "❌ Błąd połączenia.";
+        statusInfo.textContent = "❌ Error.";
     }
 }
 
@@ -132,22 +130,23 @@ function runStep() {
     if (currentSentenceIndex < sentences.length) {
         const textToSay = sentences[currentSentenceIndex].trim();
         textInput.value = textToSay; 
-        statusInfo.textContent = `🗣️ Zdanie ${currentSentenceIndex + 1} z ${sentences.length}`;
+        
+        updateProgressBar();
+        statusInfo.textContent = `🗣️ ${currentSentenceIndex + 1} / ${sentences.length}`;
         
         speakText(textToSay, () => {
             currentSentenceIndex++;
             if (currentSentenceIndex < sentences.length) {
-                // Skrócono czas do 2 sekund - 30s to była bardzo długa pauza
-                statusInfo.textContent = "⏳ Chwila przerwy...";
-                autoInterval = setTimeout(runStep, 2000); 
+                autoInterval = setTimeout(runStep, 1500); 
             } else {
-                stopAutoMode("Koniec artykułu.");
+                updateProgressBar();
+                stopAutoMode("Done / Koniec.");
             }
         });
     }
 }
 
-function stopAutoMode(msg = "Zatrzymano.") {
+function stopAutoMode(msg = "Stopped.") {
     clearTimeout(autoInterval);
     synth.cancel();
     mouth.style.animationPlayState = 'paused';
