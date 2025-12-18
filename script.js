@@ -17,7 +17,7 @@ const synth = window.speechSynthesis;
 // --- LOGIKA GŁOSU ---
 function loadVoices() {
     const voices = synth.getVoices();
-    // Szukamy najlepszego polskiego głosu (Edge ma świetne głosy "Natural")
+    // Szukamy głosów "Natural" lub polskich imion
     maleVoice = voices.find(v => v.lang.includes('pl') && v.name.includes('Natural')) ||
                 voices.find(v => v.lang.includes('pl') && (v.name.includes('Marek') || v.name.includes('Krzysztof'))) ||
                 voices.find(v => v.lang.includes('pl'));
@@ -30,12 +30,15 @@ loadVoices();
 
 // --- GŁÓWNA FUNKCJA MÓWIENIA ---
 function speakText(text, callback = null) {
-    if (synth.speaking) synth.cancel(); // Przerwij poprzednie, jeśli jeszcze mówi
+    // Zawsze przerywamy obecną mowę przed nową
+    synth.cancel(); 
+
+    if (!text) return;
 
     const utterance = new SpeechSynthesisUtterance(text);
     if (maleVoice) utterance.voice = maleVoice;
     utterance.lang = 'pl-PL';
-    utterance.rate = 1.0; // Prędkość mówienia
+    utterance.rate = 1.0; 
 
     utterance.onstart = () => {
         mouth.style.animationPlayState = 'running';
@@ -48,30 +51,35 @@ function speakText(text, callback = null) {
         if (callback) callback(); 
     };
 
+    utterance.onerror = () => {
+        mouth.style.animationPlayState = 'paused';
+        speakButton.disabled = false;
+    };
+
     synth.speak(utterance);
 }
 
-// --- NOWA LOGIKA: POBIERANIE PEŁNEJ TREŚCI ---
+// --- POBIERANIE DANYCH Z WIKIPEDII ---
 async function fetchLongWikiData() {
     const topic = topicInput.value.trim();
     if (!topic) return alert("Wpisz temat!");
 
-    statusInfo.textContent = "🔍 Przeszukuję Wikipedię...";
+    statusInfo.textContent = "🔍 Szukam tematu...";
     
     try {
-        // KROK 1: Szukamy najtrafniejszego tytułu (rozwiązuje problem małych liter)
+        // KROK 1: Wyszukiwanie poprawnego tytułu
         const searchRes = await fetch(`https://pl.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(topic)}&format=json&origin=*`);
         const searchData = await searchRes.json();
 
-        if (searchData.query.search.length === 0) {
-            statusInfo.textContent = "❌ Nie znaleziono takiego tematu.";
+        if (!searchData.query.search.length) {
+            statusInfo.textContent = "❌ Nie znaleziono artykułu.";
             return;
         }
 
         const bestTitle = searchData.query.search[0].title;
-        statusInfo.textContent = `📖 Pobieram pełną treść: ${bestTitle}...`;
+        statusInfo.textContent = `📖 Pobieram: ${bestTitle}...`;
 
-        // KROK 2: Pobieramy pełną treść artykułu (plaintext)
+        // KROK 2: Pobieranie tekstu
         const contentRes = await fetch(`https://pl.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=true&titles=${encodeURIComponent(bestTitle)}&format=json&origin=*`);
         const contentData = await contentRes.json();
         
@@ -80,28 +88,37 @@ async function fetchLongWikiData() {
         const fullText = pages[pageId].extract;
 
         if (!fullText) {
-            statusInfo.textContent = "❌ Treść artykułu jest pusta.";
+            statusInfo.textContent = "❌ Artykuł jest pusty.";
             return;
         }
 
-        // KROK 3: Czyszczenie tekstu (usuwamy puste linie, nagłówki sekcji typu === Opis ===)
+        // KROK 3: Zaawansowane czyszczenie tekstu
         const cleanText = fullText
-            .replace(/={2,}/g, '') // Usuwa znaki ===
-            .replace(/\n+/g, ' '); // Zamienia entery na spacje
+            .replace(/\[\d+\]/g, '')         // Usuwa przypisy typu [1], [22]
+            .replace(/\(([^)]+)\)/g, '')    // Opcjonalnie: usuwa teksty w nawiasach (często daty/wymowę)
+            .replace(/={2,}/g, '')          // Usuwa nagłówki sekcji
+            .replace(/\n+/g, ' ')           // Usuwa entery
+            .trim();
 
-        // KROK 4: Dzielenie na zdania
-        sentences = cleanText.split(/[.!?]+\s/).filter(s => s.length > 15);
+        // KROK 4: Dzielenie na zdania (uwzględnia kropkę po której jest wielka litera)
+        sentences = cleanText.match(/[A-ZŚĆŹŻŁÓ].+?([.!?]|\.\.\.)(?=\s[A-ZŚĆŹŻŁÓ]|$)/g) || [];
+        
+        // Jeśli match zawiedzie, używamy prostszego podziału jako fallback
+        if (sentences.length === 0) {
+            sentences = cleanText.split(/[.!?]+\s/).filter(s => s.length > 5);
+        }
+
         currentSentenceIndex = 0;
 
         if (sentences.length > 0) {
             startAutoLoop();
         } else {
-            statusInfo.textContent = "❌ Nie udało się podzielić tekstu na zdania.";
+            statusInfo.textContent = "❌ Błąd przetwarzania zdań.";
         }
 
     } catch (error) {
         console.error(error);
-        statusInfo.textContent = "❌ Błąd połączenia z serwerem.";
+        statusInfo.textContent = "❌ Błąd połączenia.";
     }
 }
 
@@ -113,17 +130,16 @@ function startAutoLoop() {
 
 function runStep() {
     if (currentSentenceIndex < sentences.length) {
-        const textToSay = sentences[currentSentenceIndex];
+        const textToSay = sentences[currentSentenceIndex].trim();
         textInput.value = textToSay; 
-        
         statusInfo.textContent = `🗣️ Zdanie ${currentSentenceIndex + 1} z ${sentences.length}`;
         
         speakText(textToSay, () => {
             currentSentenceIndex++;
             if (currentSentenceIndex < sentences.length) {
-                // Możesz zmienić 30000 (30s) na np. 5000 (5s), żeby szybciej sprawdzić działanie
-                statusInfo.textContent = "⏳ Następna partia za 30 sekund...";
-                autoInterval = setTimeout(runStep, 30000); 
+                // Skrócono czas do 2 sekund - 30s to była bardzo długa pauza
+                statusInfo.textContent = "⏳ Chwila przerwy...";
+                autoInterval = setTimeout(runStep, 2000); 
             } else {
                 stopAutoMode("Koniec artykułu.");
             }
